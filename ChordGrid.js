@@ -13,6 +13,9 @@ export default class ChordGrid {
 
         this.chordData = this.createChordData();
         this.createGrid();
+
+        // Limpar cache quando a cena for destruída
+        this.scene.events.once('shutdown', this.cleanup, this);
     }
 
     createChordData() {
@@ -57,18 +60,36 @@ export default class ChordGrid {
         const cols = 12;
         const rows = 7;
 
-        // Tornar a grade responsiva: calcular tamanhos a partir da área disponível
-        const availableWidth = Math.min(this.scene.scale.width * 0.65, 900);
-        const availableHeight = Math.min(this.scene.scale.height * 0.8, 700);
+        // Sistema responsivo simplificado
+        const screenWidth = this.scene.scale.width;
+        const screenHeight = this.scene.scale.height;
+        const isPortrait = screenHeight > screenWidth;
 
-        // spacing baseado na menor dimensão disponível e no número de colunas/linhas
-        const spacingX = Math.floor(availableWidth / (cols + 1));
-        const spacingY = Math.floor(availableHeight / (rows + 1));
-        const spacing = Math.max(40, Math.min(spacingX, spacingY));
+        // Cálculos base
+        const gridPadding = 20;
+        const minButtonSize = 40;
+        const maxButtonSize = this.isMobile ? 60 : 70;
 
-        const buttonSize = Math.max(40, Math.min(80, Math.floor(spacing * 0.9)));
-        const fontSize = this.isMobile ? `${Math.max(12, Math.floor(buttonSize / 3))}px` : `${Math.max(14, Math.floor(buttonSize / 2.5))}px`;
+        // Calcular área disponível
+        const availableWidth = screenWidth * (isPortrait ? 0.95 : 0.65) - (gridPadding * 2);
+        const availableHeight = screenHeight * (isPortrait ? 0.6 : 0.8) - (gridPadding * 2);
 
+        // Calcular tamanho dos botões e espaçamento
+        const maxSpacingX = Math.floor(availableWidth / cols);
+        const maxSpacingY = Math.floor(availableHeight / rows);
+        const spacing = Math.min(maxSpacingX, maxSpacingY);
+
+        // Garantir tamanho mínimo e máximo dos botões
+        const buttonSize = Math.max(minButtonSize,
+            Math.min(maxButtonSize, Math.floor(spacing * 0.8))
+        );
+
+        // Fonte proporcional ao botão
+        const fontSize = this.isMobile ?
+            `${Math.max(11, Math.min(16, Math.floor(buttonSize / 3)))}px` :
+            `${Math.max(13, Math.min(18, Math.floor(buttonSize / 2.5)))}px`;
+
+        // Calcular dimensões do grid
         const gridWidth = (cols - 1) * spacing;
         const gridHeight = (rows - 1) * spacing;
 
@@ -119,9 +140,7 @@ export default class ChordGrid {
                 buttonSize,
                 buttonSize,
                 12
-            );
-
-            // Borda sutil
+            );            // Borda sutil
             bg.lineStyle(2, 0xffffff, 0.3);
             bg.strokeRoundedRect(
                 -buttonSize / 2,
@@ -141,28 +160,71 @@ export default class ChordGrid {
             button.add([shadow, bg, text]);
             button.setSize(buttonSize, buttonSize);
 
-            // Área interativa maior para mobile
-            const hitAreaSize = this.isMobile ? buttonSize + 10 : buttonSize;
-            button.setInteractive(
-                new Phaser.Geom.Rectangle(
-                    -hitAreaSize / 2,
-                    -hitAreaSize / 2,
-                    hitAreaSize,
-                    hitAreaSize
-                ),
-                Phaser.Geom.Rectangle.Contains
+            // Criar uma hitarea maior e mais precisa
+            const hitArea = new Phaser.Geom.Rectangle(
+                -buttonSize * 0.7,  // Aumentar área de toque
+                -buttonSize * 0.7,
+                buttonSize * 1.4,   // 40% maior que o botão
+                buttonSize * 1.4
             );
 
-            // Feedback tátil
-            button.on('pointerdown', () => {
+            // Configurar input com prioridade alta
+            button.setInteractive(hitArea, Phaser.Geom.Rectangle.Contains, true)
+                .setData('touchStartY', 0);
+
+            // Debug: visualizar área de toque
+            if (this.isMobile) {
+                const touchArea = this.scene.add.graphics();
+                touchArea.lineStyle(1, 0xffffff, 0.2);
+                touchArea.strokeRect(
+                    hitArea.x,
+                    hitArea.y,
+                    hitArea.width,
+                    hitArea.height
+                );
+                button.add(touchArea);
+            }
+
+            // Novo sistema de detecção de toque
+            button.on('pointerdown', (pointer) => {
+                button.setData('touchStartY', pointer.y);
+
+                // Feedback visual imediato
                 this.scene.tweens.add({
                     targets: button,
-                    scale: 0.9,
-                    duration: 100,
-                    yoyo: true,
-                    ease: 'Back.easeOut'
+                    scale: 0.95,
+                    duration: 50,
+                    ease: 'Power2'
                 });
-                this.selectButton(button, chord, bg);
+            });
+
+            button.on('pointerup', (pointer) => {
+                const touchStartY = button.getData('touchStartY');
+                const touchDistance = Math.abs(pointer.y - touchStartY);
+
+                // Se o movimento vertical for pequeno, considerar como toque válido
+                if (touchDistance < 10) {
+                    this.scene.tweens.add({
+                        targets: button,
+                        scale: 1,
+                        duration: 50,
+                        ease: 'Power2',
+                        onComplete: () => {
+                            // Vibração em dispositivos mobile
+                            if (this.isMobile && navigator.vibrate) {
+                                navigator.vibrate(20);
+                            }
+                            this.selectButton(button, chord, bg);
+                        }
+                    });
+                } else {
+                    // Reset visual se for um movimento muito longo
+                    this.scene.tweens.add({
+                        targets: button,
+                        scale: 1,
+                        duration: 100
+                    });
+                }
             });
 
             button.on('pointerover', () => {
@@ -265,5 +327,17 @@ export default class ChordGrid {
         });
 
         this.onChordSelect(chord);
+    }
+
+    // Método para limpar recursos
+    cleanup() {
+        if (this.buttons && Array.isArray(this.buttons)) {
+            this.buttons.forEach(button => {
+                if (button && button.destroy) {
+                    button.destroy();
+                }
+            });
+            this.buttons = [];
+        }
     }
 }
